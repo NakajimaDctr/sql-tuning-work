@@ -47,6 +47,7 @@ EXPLAIN・インデックス・オプティマイザ関連の用語を、この�
 | 複合インデックス | 複数の列にまたがるインデックス | [Stage 4](../basics/04_composite_covering_index/) |
 | 左端一致の原則 (Leftmost Prefix) | 複合インデックス`(A, B)`は先頭列Aを含む条件でのみ使える | [Stage 4](../basics/04_composite_covering_index/) |
 | カバリングインデックス | SELECTする列がすべてインデックスに含まれ、テーブル本体を読まずに済む状態 | [Stage 4](../basics/04_composite_covering_index/) |
+| 暗黙の型変換 | 数値列に文字列リテラルを渡すなど、型が食い違うとMySQLが自動変換を行い、インデックスが使えなくなることがある | [Stage 10](../advanced/10_query_tips/) |
 
 ## 実行計画・オプティマイザ関連
 
@@ -54,9 +55,20 @@ EXPLAIN・インデックス・オプティマイザ関連の用語を、この�
 |---|---|---|
 | 統計情報 | オプティマイザが実行計画を決めるために使う、テーブル/インデックスのサンプリングに基づく推定情報 | [Stage 5](../advanced/05_statistics_cardinality/) |
 | `ANALYZE TABLE` | 統計情報を更新するコマンド | [Stage 5](../advanced/05_statistics_cardinality/) |
-| Nested Loop Join | 外側のテーブルを1行ずつ読み、その都度内側のテーブルを検索する結合方式 | [Stage 6](../advanced/06_execution_plan_internals/) |
-| Hash Join | 片方のテーブルからハッシュテーブルを構築し、もう片方を1回スキャンして突き合わせる結合方式 | [Stage 6](../advanced/06_execution_plan_internals/) |
+| Nested Loop Join | 外側のテーブルを1行ずつ読み、その都度、内側のテーブルを検索する結合方式。内側にインデックスがあると効率的 | [Stage 6](../advanced/06_execution_plan_internals/) |
+| Hash Join | 片方のテーブルからハッシュテーブルを構築し、もう片方を1回スキャンして突き合わせる結合方式。結合キーにインデックスがない大規模結合で選ばれやすい | [Stage 6](../advanced/06_execution_plan_internals/) |
 | `EXPLAIN ANALYZE` | 実際にクエリを実行し、見積もりと実測値の両方を表示する | [Stage 6](../advanced/06_execution_plan_internals/) |
+
+## 結合（JOIN）関連
+
+| 用語 | 意味 | 関連ステージ |
+|---|---|---|
+| INNER JOIN | 両方のテーブルに対応する行があるときだけ結果に残す結合。対応がない行は消える | [Stage 6](../advanced/06_execution_plan_internals/) |
+| LEFT (OUTER) JOIN | 左側のテーブルの行はすべて残し、右側に対応がなければ右側の列をNULLで埋める結合 | [Stage 6](../advanced/06_execution_plan_internals/) |
+| `ON`句と`WHERE`句 | LEFT JOINでは右表の条件を`WHERE`に書くと対応なしの行（NULL）が除外され、実質INNER JOINになってしまう | [Stage 6](../advanced/06_execution_plan_internals/), [Stage 10](../advanced/10_query_tips/) |
+| 相関サブクエリ | 外側のクエリの行ごとに評価されるサブクエリ。件数が多いとN+1に近いコストになる | [Stage 10](../advanced/10_query_tips/) |
+| `EXISTS` | サブクエリが1件でも該当を見つけた時点で打ち切る存在判定。`IN (サブクエリ)`より効率的なことがある | [Stage 10](../advanced/10_query_tips/) |
+| キーセットページネーション (seek method) | 「前ページの最後の値」を条件にして次ページを取る方式。大きな`OFFSET`の遅さを避けられる | [Stage 10](../advanced/10_query_tips/) |
 
 ## ロック・トランザクション関連
 

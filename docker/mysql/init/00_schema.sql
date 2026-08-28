@@ -8,6 +8,12 @@
 --  参照列にインデックスを作成してしまい、演習が成立しなくなる)
 -- ============================================================
 
+-- 初期化スクリプトを流すクライアントの接続文字コードを明示する。
+-- (docker-entrypoint 経由の mysql クライアントは環境によって
+--  character_set_client が latin1 になり、日本語リテラルが
+--  二重エンコードされて保存される事故を防ぐ)
+SET NAMES utf8mb4;
+
 CREATE TABLE categories (
   id         INT UNSIGNED NOT NULL AUTO_INCREMENT,
   name       VARCHAR(100) NOT NULL,

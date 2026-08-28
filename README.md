@@ -1,18 +1,20 @@
 # sql-tuning-work
 
-SQL初学者向けの「手を動かしながら学ぶSQLチューニング」教材リポジトリ。
+SQL初学者向けの「読みながら手を動かして学ぶSQLチューニング」教材リポジトリ。
 
 MySQL 8.0 ＋ ECサイト風のサンプルデータ（会員・商品・注文など数十万〜100万行規模）を
 Dockerで一発起動し、EXPLAINの読み方からインデックス設計、実行計画の内部動作、
-ロック、パーティショニングまでを、実際にクエリを書いて確認しながら学ぶ。
+ロック、パーティショニング、実践的なSQLの書き方までを、
+実際にクエリを実行して結果を確認しながら学ぶ。
 
 ## 特徴
 
 - **すべてローカルのDockerで完結**。`docker compose up`だけで環境が揃う
 - **実データで学ぶ**。数十万行規模のデータを使うため、インデックスの有無による
   速度差やEXPLAINの変化を実感できる
-- **手を動かす前提**。各ステージは「課題を自分で解く→解答例で答え合わせ」の
-  ハンズオン形式
+- **答えを隠さないガイド形式**。各ステージは「身近な例えで問題を説明 →
+  実行するSQLを提示 → その結果の読み方（何が目的で、何が変わって、何が良くなったか）を
+  丁寧に解説」という読み物になっている。クイズ形式ではないので、詰まっても先に進める
 
 ## クイックスタート
 
@@ -34,13 +36,9 @@ docker compose exec mysql mysql -uroot -prootpass sqltuning
 ## 進め方
 
 [`roadmap.md`](./roadmap.md) に沿って、`basics/` → `advanced/` の順にステージを進める。
-各ステージのディレクトリには次の3点セットが入っている。
-
-| ファイル | 内容 |
-|---|---|
-| `README.md` | そのステージのゴール・課題・解説 |
-| `exercise.sql` | 実際に実行して確認する課題用SQL |
-| `solution.sql` | 解答例と結果の解説（ネタバレ注意、まず自分で解いてから見ること） |
+各ステージのディレクトリには `README.md` が1枚だけ入っている。
+README を上から読み進め、コードブロックのSQLを手元のMySQLで実行し、
+その下に書かれている「結果の見方」と照らし合わせていく、という流れで学ぶ。
 
 ## ロードマップ概要
 
@@ -53,13 +51,14 @@ docker compose exec mysql mysql -uroot -prootpass sqltuning
 [Stage 6 実行計画の内部を読む](./advanced/06_execution_plan_internals/) →
 [Stage 7 ロックとトランザクション](./advanced/07_locking_transactions/) →
 [Stage 8 パーティショニング](./advanced/08_partitioning/) →
-[Stage 9 クエリ書き換え実践（総合演習）](./advanced/09_query_rewriting_capstone/)
+[Stage 9 クエリ書き換え実践（総合演習）](./advanced/09_query_rewriting_capstone/) →
+[Stage 10 SQL効率化のためのtips](./advanced/10_query_tips/)
 
 詳細は [`roadmap.md`](./roadmap.md) を参照。
 
 ## 環境のリセット
 
-演習でテーブル構造やインデックスを変更した後、初期状態に戻したい場合:
+読み進める中でテーブル構造やインデックスを変更した後、初期状態に戻したい場合:
 
 ```bash
 ./tools/reset_db.sh
