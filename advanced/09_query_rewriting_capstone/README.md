@@ -1,76 +1,195 @@
 # Stage 9: クエリ書き換え実践（総合演習）
 
-## 概要/ゴール
+## このステージでわかること
 
-このリポジトリの締めくくりとして、これまで学んだ内容（EXPLAINの読み方、
-インデックス設計、アンチパターンの回避、複合インデックス、統計情報、
-実行計画の内部動作）を総動員し、複数の問題を抱えた「悪いクエリ」を
-自力でチューニングする。ヒントを見る前に、まず自分の力で問題点を洗い出し、
-仮説を立てて修正することを重視する。
+ここまで学んだこと——EXPLAINの読み方、インデックス設計、アンチパターンの回避、
+複合インデックス、統計情報、実行計画の内部動作——を総動員して、
+**複数の問題を同時に抱えた「悪いクエリ」を一緒に直していく**過程を追う。
+1つの魔法のテクニックではなく、小さな改善の積み重ねでクエリが速くなることを体感する。
 
-## 前提知識
+## 前提
 
-基礎編・応用編Stage 5〜8すべて。
+基礎編・応用編 Stage 5〜8 まで。ここまでで作成したインデックスがそのまま使える前提。
 
-## 事前準備
+## 進め方
 
-特別な準備は不要。ここまでのステージで作成したインデックスがそのまま使える前提。
+各ケースについて、次のサイクルを回す。この「事実確認 → 仮説 → 1つずつ修正 → 再確認」が、
+どんな環境でも変わらないチューニングの基本手順である。
 
-## 悪いクエリを実行してEXPLAINを見る
+1. まず現状のクエリを `EXPLAIN` し、`rows` の大きさと `Extra`（特に `Using filesort`）を見る
+2. 含まれている問題を洗い出す
+3. クエリの書き換え・インデックスの追加を、根拠とセットで行う
+4. もう一度 `EXPLAIN` し、`rows` が減り `Using filesort` が消えたことを確認する
 
-`exercise.sql`の課題A・課題Bはいずれも、複数のアンチパターンが
-組み合わさった「実務でありがちな遅いクエリ」になっている。
-まずはそのままEXPLAINし、`rows`の大きさと`Extra`の内容（特に
-`Using filesort`が出ていること）を確認する。
+---
 
-## 課題
+## ケースA: 「2024年6月に完了した注文」レポート
 
-`exercise.sql`の課題A・課題Bについて、それぞれ次の手順で取り組む。
+**要件**: 2024年6月に完了（`status = 'completed'`）した注文を、
+注文者名付きで新しい順に一覧表示したい。
 
-1. EXPLAINを見て、問題点を（できれば紙に書き出して）列挙する
-2. これまでのステージの知識を使い、クエリの書き換え・インデックスの追加を行う
-3. 再度EXPLAINし、`rows`が大幅に減り`Using filesort`が消えることを確認する
+### まず現状を見てみる
 
-**達成基準**:
-- 課題A: `rows`が数万件以下、`Using filesort`が消える
-- 課題B: `rows`が数十件程度、`Using filesort`が消える
-- なぜその修正で速くなったのかを、他の人に説明できる言葉でまとめられること
+```sql
+EXPLAIN SELECT * FROM orders o, users u
+WHERE o.user_id = u.id
+  AND YEAR(o.created_at) = 2024 AND MONTH(o.created_at) = 6
+  AND o.status = 'completed'
+ORDER BY o.created_at DESC;
+```
 
-## 解答例
+**【結果の見方】** 一例: `key: idx_orders_status`, `rows: 約249,518`,
+`Extra: Using where; Using filesort`。
 
-[`solution.sql`](./solution.sql)
+含まれている問題（Stage 3・4で見たものの組み合わせ）:
 
-自分で挑戦してから見ること。解答例は一例であり、唯一の正解ではない
-（例えば列の取捨選択やインデックス名は違っていて構わない）。
+1. **`YEAR()` / `MONTH()` を `created_at` にかけている**（Stage 3のパターン3）。
+   日付の範囲としての絞り込みができず、`created_at` の索引が使えない。結果、
+   まず「`completed` 全体（約35万件）」を対象にしてしまっている
+2. **`ORDER BY o.created_at DESC` のための並べ替えが別途必要**で `Using filesort` が出ている。
+   `status` 単独の索引では、絞り込みはできても並び順までは保証できない
+3. **`SELECT *`**（Stage 3のパターン4）。`email` や `address` など、レポートに不要な列まで取得している
+4. 古い書き方の暗黙結合（`FROM a, b WHERE a.x = b.y`）。動くが、結合条件が `WHERE` に紛れて読みにくい
 
-## 解説
+### こう直す（指示）
 
-課題A・課題Bはいずれも同じパターンで解決できる。
+まず、`status`（等値条件）と `created_at`（範囲条件 かつ 並べ替え対象）の複合インデックスを作る。
 
-1. **絞り込み条件を「インデックスが使える形」に書き換える**
-   （Stage 3: 関数を列にかけない、範囲条件に書き換える）
-2. **「等値条件の列 → ソート/範囲条件の列」の順で複合インデックスを作る**
-   （Stage 4: 左端一致の原則、Stage 6: インデックス順序とORDER BYの関係）
-3. **SELECT \* をやめ、必要な列だけを取得する**
-   （Stage 3, 4: 転送量とカバリングインデックス）
+```sql
+CREATE INDEX idx_orders_status_created ON orders(status, created_at);
+```
 
-この「等値条件を先頭、ソート対象を2番目にした複合インデックス」という型は、
-「一覧画面 + 絞り込み + 新着順ソート」という実務で非常によく出るパターンへの
-定石として覚えておくと応用が利く。
+**【目的】** `status` を先頭、`created_at` を2番目にすることで、
+「`completed` に絞る」→「その中は `created_at` 順に並んでいる」という構造にする。
+すると、**絞り込みと並べ替えの両方をこの索引1本でまかなえる**。
+（範囲・ソート対象の列を後ろに置く、というStage 4の指針そのもの。）
 
-## 発展問題（任意）
+そのうえでクエリを書き換える。
 
-`orders`テーブルについて、「特定ユーザーの、特定ステータスの注文を
-新しい順に一覧表示する」（`WHERE user_id = ? AND status = ? ORDER BY created_at DESC`）
-というクエリを高速化するには、どんな複合インデックスが最適か設計し、
-実際にEXPLAINで確認してみよう。
+```sql
+EXPLAIN SELECT o.id, o.total_amount, o.created_at, u.name
+FROM orders o
+JOIN users u ON o.user_id = u.id
+WHERE o.status = 'completed'
+  AND o.created_at >= '2024-06-01' AND o.created_at < '2024-07-01'
+ORDER BY o.created_at DESC;
+```
 
-## おわりに
+- `YEAR()/MONTH()` → `created_at` の**範囲条件**に書き換え（索引が使えるようになる）
+- `SELECT *` → 必要な4列だけに
+- 暗黙結合 → 明示的な `JOIN ... ON` に
 
-お疲れ様でした。ここまでで、EXPLAINを読み解く力、インデックスを設計する力、
-典型的なアンチパターンを避ける力、そしてオプティマイザの判断根拠を推測する力が
-身についているはずです。実務のデータベースはこのリポジトリよりもずっと複雑ですが、
-「まずEXPLAINで事実を確認し、仮説を立てて一つずつ検証する」という
-基本的な進め方はどんな環境でも変わりません。
+### 結果の見方 ― 何が変わったか
 
-[トップページ](../../README.md) / [ロードマップ](../../roadmap.md)に戻る。
+一例: `key: idx_orders_status_created`, `rows: 約27,552`,
+`Extra: Using index condition; Backward index scan`。
+
+| | Before | After |
+|---|---|---|
+| `key` | `idx_orders_status` | `idx_orders_status_created` |
+| `rows` | 約249,518 | **約27,552**（約9分の1） |
+| 並べ替え | `Using filesort` | **消滅**（`Backward index scan`） |
+
+**【なぜ速くなったか】**
+
+- 範囲条件に直したことで、`completed` の中でも「2024年6月」の区間だけを索引でたどれる
+- 索引の並び順（`status` の中で `created_at` 昇順）と `ORDER BY created_at DESC` の向きが一致するので、
+  索引を**逆からたどるだけ**で並び順が完成する。別テーブルでの並べ替え（`Using filesort`）が不要になる。
+  `Backward index scan` は「索引を逆順に読んでいる」というマークで、`filesort` よりずっと軽い
+- `SELECT` を4列に絞ったことで、転送量が減る
+
+---
+
+## ケースB: 「商品レビュー一覧」機能
+
+**要件**: 特定の商品（`product_id = 500`）のレビューを、
+レビュアー名付きで新しい順に一覧表示したい。
+
+### まず現状を見てみる
+
+```sql
+EXPLAIN SELECT * FROM reviews r, users u
+WHERE r.user_id = u.id AND r.product_id = 500
+ORDER BY r.created_at DESC;
+```
+
+**【結果の見方】** 一例: `type: ALL`, `key: NULL`, `rows: 約198,926`,
+`Extra: Using where; Using filesort`。
+
+`reviews.product_id` にインデックスがなく、全件スキャン。さらに `ORDER BY` で `Using filesort`。
+ケースAと構造がそっくりであることに気づけるとよい。
+
+### こう直す（指示）
+
+```sql
+CREATE INDEX idx_reviews_product_created ON reviews(product_id, created_at);
+```
+
+**【目的】** ケースAとまったく同じ型。
+`product_id`（等値条件）を先頭、`created_at`（並べ替え対象）を2番目にした複合インデックス。
+
+```sql
+EXPLAIN SELECT r.id, r.rating, r.comment, r.created_at, u.name
+FROM reviews r
+JOIN users u ON r.user_id = u.id
+WHERE r.product_id = 500
+ORDER BY r.created_at DESC;
+```
+
+### 結果の見方 ― 何が変わったか
+
+一例: `type: ref`, `key: idx_reviews_product_created`, `rows: 約18`,
+`Extra: Backward index scan`（`filesort` なし）。
+
+| | Before | After |
+|---|---|---|
+| `type` | `ALL` | `ref` |
+| `rows` | 約198,926 | **約18** |
+| 並べ替え | `Using filesort` | 消滅 |
+
+`rows` が約20万から約18へ激減。ケースAと同じ「等値条件を先頭、ソート対象列を2番目にした
+複合インデックス」で解決している。
+
+---
+
+## この型を覚えておく
+
+ケースA・Bはどちらも、次の3手順で解決した。
+
+1. **絞り込み条件を「インデックスが使える形」に書き換える**（関数を列にかけない、範囲条件にする）
+2. **「等値条件の列 → 範囲/ソート対象の列」の順で複合インデックスを作る**
+3. **`SELECT *` をやめ、必要な列だけ取得する**
+
+特に「**等値条件を先頭、ソート対象を2番目にした複合インデックス**」は、
+「一覧画面 ＋ 絞り込み ＋ 新着順ソート」という実務で頻出のパターンへの定石。
+覚えておくと応用が利く。
+
+## まとめ
+
+- チューニングは個別テクニックの**組み合わせ**。一気に直そうとせず、1つずつ
+- 手順は「EXPLAINで事実確認 → 仮説 → 1つ修正 → 再EXPLAIN」の繰り返し
+- 「等値条件を先頭、ソート/範囲条件を後ろ」の複合インデックスは一覧系クエリの定石
+
+## さらに詳しく
+
+`orders` について、「特定ユーザーの、特定ステータスの注文を新しい順に一覧表示する」
+（`WHERE user_id = ? AND status = ? ORDER BY created_at DESC`）を高速化するには、
+どんな複合インデックスが最適か。
+
+```sql
+CREATE INDEX idx_orders_user_status_created ON orders(user_id, status, created_at);
+EXPLAIN SELECT id, total_amount, created_at FROM orders
+WHERE user_id = 100 AND status = 'completed'
+ORDER BY created_at DESC;
+DROP INDEX idx_orders_user_status_created ON orders;
+```
+
+`(user_id, status, created_at)` の順。等値条件が2つ（`user_id`, `status`）あるので
+それを先頭2列に、ソート対象の `created_at` を3列目に置く。
+すると `user_id = 100 AND status = 'completed'` の塊の中が `created_at` 順に並ぶので、
+`Using filesort` なしで新着順を返せる（`Backward index scan`）。
+これも「等値 → ソート対象」という同じ型の応用。
+
+## 次のステージへ
+
+[Stage 10: SQL効率化のためのtips](../10_query_tips/README.md) に進む。

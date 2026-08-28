@@ -1,93 +1,167 @@
 # Stage 4: 複合インデックスとカバリングインデックス
 
-## 概要/ゴール
+## このステージでわかること
 
-実務では複数の列を組み合わせた検索条件が多い。このステージでは複数列にまたがる
-「複合インデックス」の設計方法（特に列の順序＝左端一致の原則）と、
-テーブル本体へのアクセスすら不要にする「カバリングインデックス」を理解する。
-基礎編の締めくくりとして、ここまでの内容を組み合わせた実践的なインデックス設計を行う。
+実務の検索は「複数の条件のAND」が多い。このステージでは複数の列にまたがる
+**複合インデックス**の設計（特に**列の順序**が結果を左右すること＝左端一致の原則）と、
+テーブル本体へのアクセスすら不要にする**カバリングインデックス**を理解する。
+基礎編の締めくくりとして、ここまでの知識を組み合わせる。
 
-## 前提知識
+## 前提
 
-[Stage 2: インデックスの基礎](../02_index_fundamentals/README.md)、
-[Stage 3: N+1問題とアンチパターン](../03_antipatterns_n1/README.md)
-
-## 事前準備
-
-`orders` テーブルに `user_id` と `status` を組み合わせた検索が多いという
-想定でこのステージを進める。現状のインデックスを確認しておく。
+[Stage 2](../02_index_fundamentals/README.md)、[Stage 3](../03_antipatterns_n1/README.md) が終わっていること。
+`orders` に `idx_orders_user_id`、`idx_orders_created_at` がある状態。
 
 ```sql
 SHOW INDEX FROM orders;
 ```
 
-## 悪いクエリを実行してEXPLAINを見る
+## どんな問題？ ― 身近な例えで
+
+紙の電話帳を思い出してほしい。エントリは「姓 → 名」の順で並んでいる。
+
+- 「田中さん」を探す → 姓で並んでいるので、すぐたどり着ける
+- 「田中 一郎さん」を探す → まず「田中」の塊へ行き、その中は名の順なので「一郎」もすぐ
+- 「一郎さん」を（姓を問わず）探す → **無理**。名は「田中の中」「佐藤の中」…とバラバラに散っていて、
+  電話帳の並びが一切使えない
+
+複合インデックス `(A, B)` はこの電話帳とまったく同じ構造で、
+「まずAで並べ、Aが同じものの中をBで並べる」。だから **先頭の列Aを条件に含まないと使えない**。
+これを **左端一致の原則（Leftmost Prefix）** と呼ぶ。
+
+## まず現状を見てみる
+
+`orders` を「特定ユーザーの、特定ステータスの注文」で検索する場面を考える。
 
 ```sql
 EXPLAIN SELECT * FROM orders WHERE user_id = 100 AND status = 'completed';
+EXPLAIN SELECT * FROM orders WHERE status = 'completed';
 ```
 
-`idx_orders_user_id`（Stage 2で作成）は使われるが、`status`の絞り込みは
-インデックスの助けを借りられず、`user_id=100`にヒットする行（十数件程度）を
-1件ずつ確認して`status`をチェックすることになる。1ユーザーの注文数程度なら
-大きな問題にならないが、「2つの条件をどちらもインデックスで絞り込めたら
-もっと効率的ではないか？」という発想がこのステージの出発点。
+1つ目は `idx_orders_user_id`（Stage 2で作成）が使われるが、
+索引で絞れるのは `user_id = 100` の部分だけ。ヒットした十数件を1件ずつ見て
+`status` をチェックすることになる。1ユーザー分なら大した量ではないが、
+「2つの条件をどちらも索引で絞れたら、もっと効率的では？」というのがこのステージの出発点。
 
-## 課題
+2つ目（`status` 単独）は、`status` にまだ索引がないので `type: ALL`。
 
-`exercise.sql` に沿って進める。
+## こう直す（指示）
 
-1. `user_id` と `status` の複合インデックスを作成する（列の順序を考えること）
-2. 条件の順序を入れ替えてもEXPLAINが変わらないことを確認する
-3. `status` 単独の検索にはこのインデックスが使えないことを確認する（左端一致の原則）
-4. インデックスに含まれる列だけをSELECTしたときに `Using index` が出ることを確認する
-5. （任意）列の順序を逆にしたインデックスで同じ実験をし、違いを確認する
+`user_id` と `status` の複合インデックスを、**この列順で**作る。
 
-**達成基準**:
-- `user_id = ? AND status = ?` が `type: ref` で解決できること
-- `SELECT user_id, status FROM orders WHERE user_id = ?` で `Extra: Using index` が出ること
-- なぜ列の順序が結果に影響するかを説明できること
+```sql
+CREATE INDEX idx_orders_user_status ON orders(user_id, status);
+```
 
-## 解答例
+**【目的】**
+`user_id = ? AND status = ?` という2条件を、1本の索引で一度に絞り込めるようにする。
+列順を `(user_id, status)` にしたのは、`user_id` は単独でもよく検索する列であり、かつ
+値の種類が多く（5万人分）絞り込み効果が高いから。電話帳でいう「姓」の位置に置く。
 
-[`solution.sql`](./solution.sql)
+## 結果の見方 ― 何が変わったか
 
-## 解説
+### 1. 2条件のAND検索
 
-### 左端一致の原則 (Leftmost Prefix)
+```sql
+EXPLAIN SELECT * FROM orders WHERE user_id = 100 AND status = 'completed';
+EXPLAIN SELECT * FROM orders WHERE status = 'completed' AND user_id = 100;  -- 条件の順を入れ替え
+```
 
-複合インデックス `(A, B)` は「まずAでソートし、Aが同じ値の中でさらにBでソートする」
-というデータ構造（電話帳の「姓→名」の並びと同じ）。そのため:
+| クエリ | `type` | `key` | `key_len` | `rows` |
+|---|---|---|---|---|
+| `user_id = ? AND status = ?` | `ref` | `idx_orders_user_status` | 86（2列とも使用） | 約7 |
+| 条件の順を入れ替えたもの | `ref` | `idx_orders_user_status` | 86 | 約7（**まったく同じ計画**） |
 
-| 検索条件 | インデックス`(A, B)`は使えるか |
-|---|---|
-| `A = ?` | ○ 使える |
-| `A = ? AND B = ?` | ○ 使える（最も効果的） |
-| `B = ?` のみ | × 使えない（先頭のAを飛ばせない） |
+**【変わった点】** `user_id` だけでなく `status` も索引で絞れるようになり、`rows` がさらに減った。
+`key_len` が「2列分」の長さになっているのが、両方の列が使われた証拠。
 
-SQLに書く条件の順序（`WHERE A = ? AND B = ?` か `WHERE B = ? AND A = ?`か）は
-無関係で、あくまで**インデックス定義時の列順序**が重要になる。
+**【重要】** SQLに条件を書く順序（`WHERE user_id = ? AND status = ?` か
+`WHERE status = ? AND user_id = ?` か）は**結果に影響しない**。
+オプティマイザがインデックスの列順に合わせて内部的に処理する。
+効くのは **インデックス定義時の列順** だけ。
 
-### カバリングインデックス
+### 2. 先頭列を含まない検索（左端一致の原則）
 
-`SELECT`で取得する列がすべて複合インデックスに含まれている場合、
-MySQLはテーブル本体（実データ）にアクセスせず、インデックスの情報だけで
-結果を返せる。これがEXPLAINの`Extra: Using index`で示される。
-`SELECT *`のように「余計な列」まで取得すると、インデックスで行の位置を特定した後
-テーブル本体への追加アクセス（ランダムI/O）が発生し、その分遅くなる。
-これがStage 3の「SELECT \*の問題」とここで繋がる。
+```sql
+EXPLAIN SELECT * FROM orders WHERE status = 'completed';
+```
 
-### 列の順序をどう決めるか
+| `type` | `key` | 説明 |
+|---|---|---|
+| `ALL` | `NULL` | `(user_id, status)` の**先頭列 `user_id` を条件に含まない**ため、この索引は使えない |
+
+電話帳で「名だけ」を引けないのと同じ。`status` 単独で速くしたいなら、`status` を先頭にした
+別の索引が必要になる（ただし `status` は値が5種類しかない低カーディナリティ列なので、
+それが有効かどうかはStage 5で検討する）。
+
+### 3. カバリングインデックス
+
+```sql
+EXPLAIN SELECT user_id, status FROM orders WHERE user_id = 100;   -- 索引に含まれる列だけ
+EXPLAIN SELECT * FROM orders WHERE user_id = 100;                 -- 索引にない列も要る
+```
+
+| クエリ | `type` | `key` | `Extra` |
+|---|---|---|---|
+| `SELECT user_id, status ...` | `ref` | `idx_orders_user_status` | **`Using index`** |
+| `SELECT * ...` | `ref` | `idx_orders_user_status` | （`Using index` が付かない） |
+
+**【変わった点】** `SELECT` する列（`user_id`, `status`）がすべて索引に含まれている1つ目は、
+`Extra` に `Using index` が出た。これが **カバリングインデックス** の状態。
+
+**【なぜ速いか】** 索引の中に、欲しい情報がすべて載っている。だからMySQLは
+**テーブル本体（実データの行）を読みに行かない**。索引だけで結果を返せる。
+
+一方 `SELECT *` は `created_at` や `total_amount` など索引にない列が必要なので、
+索引で行の位置を特定したあと、**テーブル本体にもう一度アクセスする**（このランダムアクセスの分だけ遅い）。
+Stage 3の「`SELECT *` の問題」がここに繋がる——不要な列まで取ると、カバリングの恩恵を失う。
+
+### 4. 列の順序を逆にすると
+
+```sql
+CREATE INDEX idx_orders_status_user ON orders(status, user_id);
+EXPLAIN SELECT * FROM orders WHERE user_id = 100;   -- 先頭が status の索引で、user_id 単独検索
+DROP INDEX idx_orders_status_user ON orders;
+```
+
+`(status, user_id)` の先頭列は `status`。`user_id` だけの検索は「先頭列を使わない」ので
+`type: ALL`。**同じ2列でも、順番を変えると使えるクエリが変わる**ことが確認できる。
+（確認したら索引は消しておく。）
+
+## 列の順序をどう決めるか
 
 - 単独条件でもよく検索される列を先頭に置く
-- 一般に「選択性（カーディナリティ）が高い列」を先頭にする方が絞り込み効果が高い
-  （この考え方はStage 5でさらに掘り下げる）
+- 一般に「値の種類が多い（カーディナリティが高い）列」を先頭にすると絞り込みが効きやすい
+- 範囲条件（`>` `<` `BETWEEN`）やソート対象の列は、等値条件の列より**後ろ**に置く
+  （この型はStage 9の総合演習で使う）
 
-## 発展問題（任意）
+この考え方の根拠（カーディナリティと統計情報）はStage 5で掘り下げる。
 
-`(user_id, status, created_at)` の3列複合インデックスを作った場合、
-`WHERE user_id = 100 ORDER BY created_at DESC` はソート処理（Using filesort）なしで
-実行できるだろうか？ 実際に試してみよう。
+## まとめ
+
+- 複合インデックス `(A, B)` は「Aで並べ、その中をBで並べる」電話帳と同じ構造
+- **先頭列Aを含む条件でしか使えない**（左端一致の原則）。SQLの条件記述順は無関係
+- `SELECT` 列がすべて索引に含まれると `Extra: Using index`＝カバリングインデックスで、
+  テーブル本体を読まずに済む
+- 同じ列でも、インデックスの列順で使えるクエリが変わる
+
+## さらに詳しく
+
+`(user_id, status, created_at)` という3列の複合インデックスを作ると、
+`WHERE user_id = 100 ORDER BY created_at DESC` はソート処理（`Using filesort`）なしで実行できるか。
+
+```sql
+CREATE INDEX idx_orders_user_status_created ON orders(user_id, status, created_at);
+EXPLAIN SELECT * FROM orders WHERE user_id = 100 ORDER BY created_at DESC;
+DROP INDEX idx_orders_user_status_created ON orders;
+```
+
+答えは「できる」。索引は `user_id` ごとに、その中で `status`、さらにその中で `created_at` の順に
+並んでいる。`user_id = 100` の塊の中は `created_at` 順（正確には `status`→`created_at` 順だが
+`user_id` 固定なら `created_at` で並んでいるとみなせる区間がある）なので、
+それを**逆からたどるだけ**で `ORDER BY created_at DESC` を満たせる。
+EXPLAIN の `Extra` から `Using filesort` が消え、代わりに `Backward index scan` が出る。
+「絞り込み条件の列 → ソート対象の列」の順で索引を作ると、絞り込みと並べ替えを1本でまかなえる。
 
 ## 次のステージへ
 
