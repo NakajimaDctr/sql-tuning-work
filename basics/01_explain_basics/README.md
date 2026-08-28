@@ -138,6 +138,12 @@ EXPLAIN SELECT * FROM orders ORDER BY id DESC LIMIT 10;
   `Using filesort`（別途の並べ替え）は発生しない。「並び順が索引と一致していればソートは要らない」という、
   Stage 4・9で効いてくる考え方の予告編。
 
+## もっと踏み込んだ疑問
+
+「`type: index` はなぜ遅いことがあるのか」「`COUNT(*)` と `ORDER BY user_id` で速さが違うのはなぜか」
+「主キーと索引の `ORDER BY` での使われ方の違い」など、一歩踏み込んだQ&Aを
+[FAQ: EXPLAIN と索引の仕組み](./FAQ.md) にまとめてある。
+
 ## 次のステージへ
 
 [Stage 2: インデックスの基礎](../02_index_fundamentals/README.md) に進む。
